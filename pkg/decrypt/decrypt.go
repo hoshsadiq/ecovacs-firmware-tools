@@ -268,6 +268,16 @@ func (d *Decryptor) decryptSection(sectionData, key, iv []byte) ([]byte, error) 
 	return decrypted, nil
 }
 
+// SectionMeta stores per-section metadata for repacking.
+type SectionMeta struct {
+	Type          string `json:"type"`
+	Filename      string `json:"filename"`
+	Unkn1         uint8  `json:"unkn1"`
+	Unkn2         uint16 `json:"unkn2"`
+	Size          int    `json:"size"`
+	EncryptedSize int    `json:"encrypted_size"`
+}
+
 // DecryptedSection represents a successfully decrypted section
 type DecryptedSection struct {
 	Section        *Section
@@ -275,6 +285,7 @@ type DecryptedSection struct {
 	ChecksumValid  bool
 	OutputFilename string
 	Manifest       *Manifest // Only populated for manifest sections
+	Meta           SectionMeta
 }
 
 // DecryptAll decrypts all firmware sections
@@ -344,14 +355,29 @@ func (d *Decryptor) DecryptAll(outputDir string) ([]*DecryptedSection, error) {
 		outputFile := d.getSectionFilename(section, manifest, i)
 		fullPath := filepath.Join(outputDir, outputFile)
 
+		typeName := "unknown"
+		if manifest != nil && i == 0 {
+			typeName = "manifest"
+		} else if manifest != nil && i > 0 && i <= len(manifest.Sections) {
+			typeName = manifest.Sections[i-1].Name
+		}
+
+		meta := SectionMeta{
+			Filename:      outputFile,
+			Unkn1:         section.Unkn1,
+			Type:          typeName,
+			Unkn2:         section.Unkn2,
+			Size:          len(decryptedUnpadded),
+			EncryptedSize: section.Size,
+		}
+
 		var dataToWrite []byte
 		if manifest != nil && i == 0 {
-			// For the manifest, write formatted JSON
-			prettyJSON, err := json.MarshalIndent(manifest, "", "  ")
+			compactJSON, err := json.Marshal(manifest)
 			if err != nil {
 				continue
 			}
-			dataToWrite = append(prettyJSON, '\n')
+			dataToWrite = compactJSON
 		} else {
 			dataToWrite = decryptedUnpadded
 		}
@@ -365,6 +391,7 @@ func (d *Decryptor) DecryptAll(outputDir string) ([]*DecryptedSection, error) {
 			DecryptedData:  decryptedUnpadded,
 			ChecksumValid:  checksumValid,
 			OutputFilename: outputFile,
+			Meta:           meta,
 		}
 
 		// Store manifest reference for manifest section
@@ -374,6 +401,17 @@ func (d *Decryptor) DecryptAll(outputDir string) ([]*DecryptedSection, error) {
 		}
 
 		results = append(results, result)
+	}
+
+	// Save section metadata for repacking
+	var metas []SectionMeta
+	for _, r := range results {
+		metas = append(metas, r.Meta)
+	}
+	metaPath := filepath.Join(outputDir, ".ecovacs_sections.json")
+	metaJSON, _ := json.MarshalIndent(metas, "", "  ")
+	if err := os.WriteFile(metaPath, append(metaJSON, '\n'), 0644); err != nil {
+		return nil, fmt.Errorf("failed to write section metadata: %w", err)
 	}
 
 	return results, nil
@@ -412,4 +450,3 @@ func (d *Decryptor) getSectionFilename(section *Section, manifest *Manifest, sec
 	// Fallback to old naming scheme
 	return fmt.Sprintf("section_%d.bin", section.Unkn2)
 }
-

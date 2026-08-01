@@ -5,8 +5,8 @@ import (
 	"os"
 
 	"github.com/charmbracelet/lipgloss"
-	"github.com/spf13/cobra"
 	log "github.com/sirupsen/logrus"
+	"github.com/spf13/cobra"
 )
 
 var (
@@ -57,6 +57,7 @@ func newRootCmd() *cobra.Command {
 	cmd.PersistentFlags().BoolVarP(&verbose, "verbose", "v", false, "verbose output")
 	cmd.AddCommand(newDecryptCmd())
 	cmd.AddCommand(newDownloadCmd())
+	cmd.AddCommand(newRepackCmd())
 
 	return cmd
 }
