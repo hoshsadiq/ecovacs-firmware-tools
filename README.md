@@ -1,133 +1,183 @@
 # Ecovacs Firmware Tools
 
-A comprehensive toolkit for working with Ecovacs DEEBOT robot vacuum firmware. This tool allows you to decrypt firmware images and download firmware updates via the official OTA API.
+A collection of tools to download, decrypt, modify, repack, and serve Ecovacs DEEBOT firmware images.
+
+> Based on reverse engineering of the Ecovacs DEEBOT OZMO T8 AIVI and T20 Omni firmware format.
 
 ## Features
 
-- **Decrypt Firmware**: Extract and decrypt firmware sections from Ecovacs firmware images
-- **Download Firmware**: Automatically discover and download firmware versions via OTA API
-- **Manifest Parsing**: Automatically parse and display firmware manifest information
-- **Beautiful CLI**: Modern terminal interface with colors and progress bars using Cobra, Logrus, and Lipgloss
+- **Download** firmware images from Ecovacs servers using product info from [robotinfo.dev](https://robotinfo.dev)
+- **Decrypt** encrypted firmware sections (AES-128-CBC with device-specific key derivation)
+- **Repack** modified sections back into encrypted firmware images
+- **OTA Serve** modified firmware directly to the robot over LAN (HTTPS + MQTT + DNS)
 
 ## Installation
 
-### From Release
+```bash
+go install github.com/denysvitali/ecovacs-firmware-tools@latest
+```
 
-Download the latest binary from the [releases page](https://github.com/denysvitali/ecovacs-firmware-tools/releases).
-
-### From Source
+Or build from source:
 
 ```bash
 git clone https://github.com/denysvitali/ecovacs-firmware-tools.git
 cd ecovacs-firmware-tools
-go build -o ecovacs-firmware-tools .
+go build -o ecovacs-fw .
 ```
 
-## Usage
-
-### Decrypt Firmware
-
-Decrypt an Ecovacs firmware file and extract all sections:
-
-```bash
-# Basic decryption
-ecovacs-firmware-tools decrypt firmware.bin
-
-# List sections without decrypting
-ecovacs-firmware-tools decrypt -l firmware.bin
-
-# Decrypt with custom parameters
-ecovacs-firmware-tools decrypt --device-id 659yh8 --platform px30 firmware.bin
-
-# Decrypt to specific directory
-ecovacs-firmware-tools decrypt -o output_dir firmware.bin
-
-# Verbose output
-ecovacs-firmware-tools decrypt -v firmware.bin
-```
-
-#### Example Output
-
-```
-ℹ Loaded firmware: 59611104 bytes
-ℹ Device parameters: 659yh8, px30, fw0, v1
-✓ Found 6 firmware sections
-
-Manifest: T9AF_px30 v1.4.9 (2021-07-23)
-
-  Section 0: manifest (928 bytes)
-  Section 1: pre_upgrade_script (256 bytes)
-  Section 2: normal_boot (4.91 MB)
-  Section 3: normal_fs (51.86 MB)
-  Section 4: mcu (82.34 KB)
-  Section 5: post_upgrade_script (16 bytes)
-```
+## Commands
 
 ### Download Firmware
 
-Search for and download firmware via the official Ecovacs OTA API:
+Download firmware images from Ecovacs servers:
 
 ```bash
-# Search for firmware (no download)
-ecovacs-firmware-tools download --models 659yh8,snxbvc
+# List available products and firmware versions
+ecovacs-fw download --list-products
 
-# Search and download
-ecovacs-firmware-tools download --models 659yh8 --download
+# Download latest firmware for a specific product
+ecovacs-fw download --product-id 659yh8
 
-# Search for specific version
-ecovacs-firmware-tools download --models 659yh8 --base-version 1.4.8
-
-# Use specific OTA server
-ecovacs-firmware-tools download --server portal-eu.ecouser.net --models 659yh8
-
-# Download to specific directory
-ecovacs-firmware-tools download --models 659yh8 --download -o firmware_dir
+# Download specific firmware version
+ecovacs-fw download --product-id 659yh8 --firmware-version 1.7.8
 ```
 
-#### Supported Models
+### Decrypt Firmware
 
-- `659yh8` - DEEBOT T9 AIVI
-- `snxbvc` - DEEBOT N8 PRO
-- Add more models by using their model ID
+Decrypt encrypted firmware sections:
 
-## Firmware Structure
+```bash
+# Decrypt with default parameters (productId: 659yh8, platform: px30)
+ecovacs-fw decrypt firmware.bin
 
-Ecovacs firmware files contain multiple encrypted sections:
+# Decrypt with custom device parameters
+ecovacs-fw decrypt --device-id 659yh8 --platform px30 firmware.bin
 
-1. **Manifest** - JSON metadata containing firmware version, hardware version, and section information
-2. **Pre-upgrade Script** - Shell script executed before firmware upgrade
-3. **Boot Image** - Bootloader/kernel image
-4. **Filesystem** - Root filesystem (usually SquashFS)
-5. **MCU Firmware** - Microcontroller firmware
-6. **Post-upgrade Script** - Shell script executed after firmware upgrade
+# Specify output directory
+ecovacs-fw decrypt --output ./decrypted firmware.bin
 
-Each section is encrypted using AES-128-CBC with a key derived from the section type and size.
+# List sections without decrypting
+ecovacs-fw decrypt --list-sections firmware.bin
+```
+
+Decrypted sections are saved with a `.ecovacs_sections.json` metadata file needed for repacking.
+
+### Repack Firmware
+
+Re-encrypt modified sections into a firmware image:
+
+```bash
+# Repack a decrypted directory back into firmware
+ecovacs-fw repack decrypted/ modified-firmware.bin
+
+# Override manifest fields during repack
+ecovacs-fw repack decrypted/ modified-firmware.bin \
+  --fw-ver "1.27.0+custom" \
+  --release-date "2025-08-01-12:00:00"
+```
+
+Available flags:
+
+| Flag | Description |
+|------|-------------|
+| `--fw-ver` | Override firmware version (must be >= current for OTA acceptance) |
+| `--hw-ver` | Override hardware version |
+| `--product` | Override product codename (must match robot's product) |
+| `--release-date` | Override release date (format: YYYY-MM-DD-HH:MM:SS) |
+
+The manifest section is space-padded to match the original decrypted size before encryption. All other sections must not exceed their original encrypted size (one AES block of slack is available per section).
+
+### OTA Serve
+
+Serve modified firmware directly to the robot over LAN. Handles HTTPS (firmware download), MQTT (shell command injection), and DNS (domain redirection):
+
+```bash
+# HTTPS only (robot must already be pointed at your server)
+ecovacs-fw ota-serve --fw modified-firmware.bin
+
+# Full stack: DNS + MQTT + HTTPS (robot auto-connects, gets told to OTA)
+ecovacs-fw ota-serve --fw modified-firmware.bin --mqtt --dns --ip 192.168.1.50
+
+# Custom shell command instead of default OTA trigger
+ecovacs-fw ota-serve --fw modified-firmware.bin --mqtt --ip 192.168.1.50 \
+  --cmd "wget -q https://192.168.1.50/fw.bin -O /tmp/fw.bin && fw_cut.sh /tmp/fw.bin"
+
+# Custom upstream DNS resolver
+ecovacs-fw ota-serve --fw modified-firmware.bin --dns --upstream 192.168.1.1:53
+```
+
+Available flags:
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--fw` | (required) | Firmware binary to serve |
+| `--addr` | `:443` | HTTPS listen address |
+| `--cert` / `--key` | auto | TLS certificate (self-signed generated if omitted) |
+| `--fw-ver` | | Firmware version to advertise |
+| `--product` | | Product codename (auto-read from `--manifest` if omitted) |
+| `--manifest` | | Path to manifest.json for auto product/version |
+| `--force` | false | Always claim update available |
+| `--build-num` | 0 | Build number |
+| `--mqtt` | false | Enable MQTT shell command server |
+| `--dns` | false | Enable DNS redirect for ecouser.net/ecovacs.com |
+| `--ip` | | Your machine's LAN IP (required for --mqtt/--dns) |
+| `--cmd` | | Custom shell command (default: download + fw_cut.sh) |
+| `--upstream` | `8.8.8.8:53` | Upstream DNS for non-Ecovacs queries |
+
+#### How OTA Serve Works
+
+1. Robot connects to `mq.ecouser.net:8883` (MQTT over TLS, no cert pinning)
+2. DNS server redirects `mq.ecouser.net` and `portal.ecouser.net` to your machine
+3. MQTT broker accepts the connection (anonymous auth) and sends a shell command
+4. Robot executes the command as root (downloads firmware, runs `fw_cut.sh`)
+5. Robot downloads firmware from your HTTPS server
+6. Firmware is flashed to the inactive A/B partition, robot reboots
+
+The robot's A/B dual-boot system means a bad flash won't brick the device — it falls back to the previous working partition.
+
+## How It Works
+
+Ecovacs firmware images consist of multiple encrypted sections:
+
+1. Each section is encrypted using AES-128-CBC
+2. The encryption key and IV are derived from the section type and size using a format string found in the robot's `fw` binary, combined via base64 + SHA-256
+3. The manifest section contains firmware metadata (version, product ID, etc.)
+4. Firmware updates are delivered via OTA using HTTPS with a signed JSON manifest
+
+### Firmware Structure
+
+```
+Firmware Image
+├── Manifest Section (JSON, encrypted, space-padded)
+├── Pre-upgrade Script (encrypted)
+├── Boot Image (encrypted)
+├── Root Filesystem (encrypted squashfs)
+├── MCU Firmware (encrypted)
+├── MCU Station Firmware (encrypted)
+├── SL Firmware (encrypted)
+├── DSP Files (encrypted, optional)
+└── Post-upgrade Script (encrypted)
+```
 
 ## Development
 
-### Building
-
 ```bash
-go build -o ecovacs-firmware-tools .
+# Run tests
+go test ./...
+
+# Build
+go build -o ecovacs-fw .
 ```
 
-### Dependencies
+## Related Projects
 
-- [Cobra](https://github.com/spf13/cobra) - CLI framework
-- [Logrus](https://github.com/sirupsen/logrus) - Structured logging
-- [Lipgloss](https://github.com/charmbracelet/lipgloss) - Terminal styling
-- [Progressbar](https://github.com/schollz/progressbar) - Progress bars
+- [robotinfo.dev](https://robotinfo.dev) - Ecovacs product and firmware database
+- [Bumper](https://github.com/bmartin5692/bumper) - Self-hosted Ecovacs cloud server
 
 ## License
 
-MIT License - Copyright (c) 2025 Denys Vitali
+MIT
 
-See [LICENSE](LICENSE) file for details.
+## Author
 
-## Contributing
-
-Contributions are welcome! Please feel free to submit a Pull Request.
-
-## Disclaimer
-
-This tool is for educational and research purposes only. Use at your own risk. The author is not responsible for any damage caused by using this tool.
+Denys Vitali (@denysvitali)
